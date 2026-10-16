@@ -1,0 +1,101 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Premier Chess</title><link rel="manifest" href="manifest.webmanifest"><meta name="theme-color" content="#38003c">
+<link rel="apple-touch-icon" href="icon-192.png"><link rel="icon" href="icon-192.png">
+<style>
+*{box-sizing:border-box}body{margin:0;background:#38003c;color:#fff;font:15px system-ui,sans-serif;padding:env(safe-area-inset-top) 10px env(safe-area-inset-bottom)}
+h1{color:#00ff85;margin:12px 0 4px}main{max-width:520px;margin:auto}select,input,button{font:inherit;padding:10px;border-radius:8px;border:0;margin:4px 0;width:100%}
+button{background:#00ff85;color:#38003c;font-weight:700}button:disabled{opacity:.4}button.alt{background:#e90052;color:#fff}
+.card{background:#ffffff14;padding:12px;border-radius:12px;margin:10px 0}.hide{display:none}
+#board{display:grid;grid-template-columns:repeat(8,1fr);width:min(96vw,68vh,520px);aspect-ratio:1;margin:8px auto;border:3px solid #00ff85}
+.sq{display:flex;align-items:center;justify-content:center;font-size:min(9vw,6vh,46px);position:relative}.l{background:#ececec}.d{background:var(--club,#555)}
+.sq span.w{color:#fff;text-shadow:0 0 3px #000,0 0 3px #000}.sq span.b{color:#111;text-shadow:0 0 2px #fff}
+.sel{outline:3px solid #ffd400;outline-offset:-3px}.lm{box-shadow:inset 0 0 0 100px #ffd40055}.tg::after{content:"";width:28%;height:28%;border-radius:50%;background:#00ff85aa;position:absolute}
+.bar{display:flex;align-items:center;gap:8px}.crest{width:26px;height:26px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;border:2px solid #fff}
+table{width:100%;border-collapse:collapse}td,th{padding:4px;text-align:left}.tag{background:#ffffff22;padding:2px 8px;border-radius:99px}
+</style></head><body><main>
+<h1>⚽ Premier Chess</h1>
+<section id="menu">
+ <div class="card"><b>Your club</b><select id="club"></select><b>Computer level</b>
+ <select id="lvl"><option value="3,4">Academy</option><option value="12,10" selected>Premier</option><option value="20,16">World Class (Stockfish max)</option></select>
+ <button id="cpu">Play the computer</button></div>
+ <div class="card"><b>Online (installed app only)</b><div id="gate" class="tag hide">Install the app to unlock online play</div>
+ <button id="host">Host a match</button><input id="code" placeholder="Friend's match code"><button id="join">Join match</button><div id="hc"></div></div>
+ <button id="inst" class="alt hide">Install app</button>
+</section>
+<section id="game" class="hide">
+ <div class="bar" id="top"></div><div id="board"></div><div class="bar" id="bot"></div>
+ <div id="msg" class="card"></div><button id="ana" class="hide">Match analysis</button>
+ <select id="depth"><option value="0">Quick (assumptive: material only)</option><option value="1" selected>Deep (realistic: Stockfish)</option></select>
+ <div id="an"></div><button class="alt" id="back">Menu</button>
+</section></main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const $=id=>document.getElementById(id),G={p:'♟',n:'♞',b:'♝',r:'♜',q:'♛',k:'♚'};
+const CL=[["Arsenal","#ef0107"],["Aston Villa","#670e36"],["Bournemouth","#b50e12"],["Brentford","#e30613"],["Brighton","#0057b8"],["Burnley","#6c1d45"],["Chelsea","#034694"],["Crystal Palace","#1b458f"],["Everton","#003399"],["Fulham","#333333"],["Leeds","#1d428a"],["Liverpool","#c8102e"],["Man City","#6cabdd"],["Man United","#da291c"],["Newcastle","#241f20"],["Nottm Forest","#dd0000"],["Sunderland","#eb172b"],["Tottenham","#132257"],["West Ham","#7a263a"],["Wolves","#fdb913"]];
+CL.forEach((c,i)=>$('club').add(new Option(c[0],i)));$('club').value=Math.floor(Math.random()*20);
+const ini=i=>CL[i][0].split(' ').map(w=>w[0]).join('').slice(0,3),crest=i=>`<span class="crest" style="background:${CL[i][1]}">${ini(i)}</span>`;
+let g,me,mode,sel,targets=[],last,conn,peer,isHost,oppClub=0,myClub=0,busy=false,sf,lvl=[12,10],dp;
+const installed=matchMedia('(display-mode: standalone)').matches||navigator.standalone||/^(localhost|127\.)/.test(location.hostname);
+if(!installed){$('gate').classList.remove('hide');$('host').disabled=$('join').disabled=true}
+addEventListener('beforeinstallprompt',e=>{e.preventDefault();dp=e;$('inst').classList.remove('hide')});$('inst').onclick=()=>dp&&dp.prompt();
+if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js');
+const coin=()=>crypto.getRandomValues(new Uint8Array(1))[0]&1;
+async function initSF(){if(sf)return;const t=await (await fetch('https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js')).text();sf=new Worker(URL.createObjectURL(new Blob([t])));sf.postMessage('uci')}
+function ask(fen,depth,skill=20){return new Promise(res=>{let s=0;const h=e=>{const l=String(e.data),m=l.match(/score (cp|mate) (-?\d+)/);
+ if(m)s=m[1]=='mate'?(m[2]>0?10000-m[2]:-10000-m[2]):+m[2];
+ if(l.startsWith('bestmove')){sf.removeEventListener('message',h);res({best:l.split(' ')[1],s:fen.split(' ')[1]=='w'?s:-s})}};
+ sf.addEventListener('message',h);sf.postMessage('setoption name Skill Level value '+skill);sf.postMessage('position fen '+fen);sf.postMessage('go depth '+depth)})}
+function begin(m,color){mode=m;me=color;g=new Chess();sel=null;targets=[];last=null;busy=false;$('an').innerHTML='';$('ana').classList.add('hide');
+ $('menu').classList.add('hide');$('game').classList.remove('hide');
+ const col=CL[myClub][1];$('board').style.setProperty('--club',col);
+ $('top').innerHTML=crest(oppClub)+CL[oppClub][0]+(mode=='cpu'?' (CPU)':'');$('bot').innerHTML=crest(myClub)+CL[myClub][0]+' (you)';
+ $('msg').textContent='🪙 Coin toss: you play '+(me=='w'?'White and kick off':'Black');render();if(mode=='cpu'&&me=='b')cpuMove()}
+function render(){const B=$('board');B.innerHTML='';const f=me=='b',bd=g.board();
+ for(let r=0;r<8;r++)for(let c=0;c<8;c++){const R=f?7-r:r,F=f?7-c:c,sq='abcdefgh'[F]+(8-R),p=bd[R][F],d=document.createElement('div');
+  d.className='sq '+((R+F)%2?'d':'l')+(sel==sq?' sel':'')+(targets.includes(sq)?' tg':'')+(last&&(last.from==sq||last.to==sq)?' lm':'');
+  if(p)d.innerHTML=`<span class="${p.color}">${G[p.type]}</span>`;d.onclick=()=>tap(sq);B.append(d)}}
+function tap(sq){if(g.game_over()||busy||g.turn()!=me)return;const p=g.get(sq);
+ if(sel&&targets.includes(sq))return doMove({from:sel,to:sq,promotion:'q'});
+ if(p&&p.color==me){sel=sq;targets=g.moves({square:sq,verbose:true}).map(m=>m.to)}else{sel=null;targets=[]}render()}
+function doMove(m,remote){const r=g.move(m);if(!r)return;last=r;sel=null;targets=[];
+ if(mode=='p2p'&&!remote)conn.send({t:'move',m:{from:r.from,to:r.to,promotion:r.promotion}});render();
+ if(g.game_over()){let t=g.in_checkmate()?(g.turn()==me?'Full time: you lost 😬':'Full time: you won! 🏆'):'Full time: draw 🤝';$('msg').textContent=t;$('ana').classList.remove('hide')}
+ else{$('msg').textContent=g.turn()==me?'Your move'+(g.in_check()?' (check!)':''):'Opponent thinking…';if(mode=='cpu'&&g.turn()!=me)cpuMove()}}
+async function cpuMove(){busy=true;await initSF();lvl=$('lvl').value.split(',').map(Number);const r=await ask(g.fen(),lvl[1],lvl[0]);busy=false;
+ doMove({from:r.best.slice(0,2),to:r.best.slice(2,4),promotion:r.best[4]})}
+$('cpu').onclick=()=>{myClub=+$('club').value;do{oppClub=Math.floor(Math.random()*20)}while(oppClub==myClub);begin('cpu',coin()?'w':'b')};
+function wire(){const rdy=()=>conn.send({t:'club',i:myClub});conn.open?rdy():conn.on('open',rdy);
+ conn.on('data',d=>{if(d.t=='club'){oppClub=d.i;if(isHost){const hw=coin();conn.send({t:'start',guestWhite:!hw});begin('p2p',hw?'w':'b')}}
+  if(d.t=='start')begin('p2p',d.guestWhite?'w':'b');if(d.t=='move')doMove(d.m,true)})}
+$('host').onclick=()=>{myClub=+$('club').value;isHost=true;peer=new Peer();peer.on('open',id=>$('hc').innerHTML='Share this code: <b>'+id+'</b>');peer.on('connection',c=>{conn=c;wire()})};
+$('join').onclick=()=>{myClub=+$('club').value;isHost=false;peer=new Peer();peer.on('open',()=>{conn=peer.connect($('code').value.trim());wire()})};
+$('back').onclick=()=>{$('game').classList.add('hide');$('menu').classList.remove('hide');if(peer)peer.destroy()};
+// ---- Match analysis ----
+const V={p:1,n:3,b:3,r:5,q:9,k:0};
+function mat(fen){const c=new Chess(fen);let s=0;c.board().flat().forEach(p=>{if(p)s+=(p.color=='w'?1:-1)*V[p.type]*100});return s}
+async function evalW(fen,deep){const c=new Chess(fen);if(c.in_checkmate())return c.turn()=='w'?-10000:10000;if(c.game_over())return 0;return deep?(await ask(fen,13)).s:mat(fen)}
+$('ana').onclick=async()=>{const deep=$('depth').value=='1',H=g.history({verbose:true}),c=new Chess(),fens=[c.fen()];H.forEach(m=>{c.move(m.san);fens.push(c.fen())});
+ if(deep)await initSF();const ev=[];for(let i=0;i<fens.length;i++){$('an').textContent=`Analysing ${i+1}/${fens.length}…`;ev.push(await evalW(fens[i],deep))}
+ const S={w:[],b:[]};let swing={l:0};
+ H.forEach((m,i)=>{const sg=m.color=='w'?1:-1,loss=Math.max(0,Math.min(1000,sg*(ev[i]-ev[i+1])));S[m.color].push({loss,st:sg*ev[i],san:m.san,n:Math.floor(i/2)+1});if(loss>swing.l)swing={l:loss,san:m.san,n:Math.floor(i/2)+1,c:m.color}});
+ const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
+ const prof=(a,name)=>{const L=a.map(x=>x.loss),acc=Math.round(100*Math.exp(-avg(L)/200)),cnt=(lo,hi)=>L.filter(x=>x>=lo&&x<hi).length,bl=cnt(200,1e9),mi=cnt(100,200),ia=cnt(50,100),
+  behind=a.filter(x=>x.st<=-100).map(x=>x.loss),rest=a.filter(x=>x.st>-100).map(x=>x.loss),tilt=a.filter((x,i)=>i&&a[i-1].loss>=100&&x.loss>=100).length,
+  thrown=a.filter(x=>x.st>=300&&x.loss>=200).length;
+  let persona,line;
+  if(thrown)[persona,line]=['The Bottler','Had the game won, then threw the lead away. Title-race nerves.'];
+  else if(tilt>=2)[persona,line]=['Lost the Dressing Room','Errors came in clusters: one slip led to another. Reset after a mistake.'];
+  else if(acc>=88)[persona,line]=['The Tiki-Taka Controller','Calm, precise, rarely gave anything away.'];
+  else if(behind.length>1&&avg(behind)<avg(rest))[persona,line]=['The Comeback Merchant','Played better when behind: pressure sharpened them.'];
+  else if(bl>=2)[persona,line]=['Heavy-Metal Gambler','Bold and chaotic, with a few costly gambles.'];
+  else [persona,line]=['Mid-table Grinder','Solid in patches, inconsistent overall.'];
+  return `<tr><th>${name}</th><td>${acc}%</td><td>${bl}/${mi}/${ia}</td><td>${Math.round(avg(behind))||'-'}</td></tr><tr><td colspan=4><span class="tag">${persona}</span> ${line}</td></tr>`};
+ const pts=ev.map((e,i)=>`${i/(ev.length-1||1)*300},${50-Math.max(-500,Math.min(500,e))/10}`).join(' ');
+ $('an').innerHTML=`<div class="card"><b>${deep?'Realistic (Stockfish depth 13)':'Assumptive (material count only)'}</b>
+ <svg viewBox="0 0 300 100" width="100%"><line x1="0" y1="50" x2="300" y2="50" stroke="#fff6"/><polyline fill="none" stroke="#00ff85" stroke-width="2" points="${pts}"/></svg>
+ <small>Up = White ahead. Down = Black ahead.</small>
+ <table><tr><th></th><th>Accuracy</th><th>Blunder/Mistake/Inacc.</th><th>Avg loss when behind (cp)</th></tr>${prof(S.w,'White')}${prof(S.b,'Black')}</table>
+ <p>Turning point: move ${swing.n||'-'} (${swing.san||'-'}) swung the game by ${Math.round(swing.l/100*10)/10} pawns.</p></div>`}
+</script></body></html>
